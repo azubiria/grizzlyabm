@@ -1,0 +1,730 @@
+This document contains annotated model code. The model is meant to be implemented in NetLogo 6.1.1*
+*Wilensky, U. 1999. NetLogo. http://ccl.northwestern.edu/netlogo/. 
+
+If you would like to use part of this code we ask that you please reference our work:
+Zubiria Perez, A., 2020. Evaluating the role of movement behaviour and habitat familiarity on translocated grizzly bear success using an agent-based modelling approach. [Unpublished M.Sc. Thesis]. University of Victoria.**
+**updated citation will become available after work is published (In review as of February 2021)
+
+Any questions about the code should be addressed to Alejandra Zubiria Perez (aleja.zubiria@gmail.com)
+
+;;;;;;; NetLogo code for grizzly bear ABM ;;;;;;;
+extensions
+[
+  gis
+  table
+  csv
+]
+
+globals
+[
+  AOI ;Area Of Interest
+  day
+  daycounter ;used to determine ticks
+  seasonn ;records season within the model
+  yearr ;records year within the model
+  
+  target-id ;All patches (1 ha cells) belonging to the same global cell (1 km2) share the same ID.
+            ;this variable lets the bear know what ID corresponds to its target cell
+  current-id ;corresponds to the ID of the global cell the bear is currently on
+  this-global-cell ;let's the bear identify its current global cell
+  
+  visited-gcells ;keeps track of all global cells visited in a year
+  visited-gcells-seasonal ;keeps track of all global cells visited in a season
+  visited-lcells-seasonal ;keeps track of all local cells visited in a season
+  
+  replenishing-gcells ;global cells that are replenishing their utility value
+  replenishing-lcells ;local cells that are replenishing their utility value
+  
+  ;Local Measures of Success for each season; three per season because the model reinforces each season separately
+  ;i.e. in season 1, the bear gains information about resources that may be available in that patch in all three seasons
+  ;and reinforces the cells according to the potential quality of that patch in each of the three seasons
+  mos-s1lq1
+  mos-s1lq2
+  mos-s1lq3
+  mos-s2lq1
+  mos-s2lq2
+  mos-s2lq3
+  mos-s3lq1
+  mos-s3lq2
+  mos-s3lq3
+  
+  ;Records the maximum local seasonal quality [max MoS(l)] accessed during a simulation
+  mos-s1lq1_max
+  mos-s1lq2_max
+  mos-s1lq3_max
+  mos-s2lq1_max
+  mos-s2lq2_max
+  mos-s2lq3_max
+  mos-s3lq1_max
+  mos-s3lq2_max
+  mos-s3lq3_max
+  
+  ;Similarly for global quality, MoS is calculated per season
+  mos-s1gq
+  mos-s2gq
+  mos-s3gq
+  
+  ;Records the maximum global seasonal quality [max MoS(g)] accessed during a simulation
+  mos-s1gq_max
+  mos-s2gq_max
+  mos-s3gq_max
+  
+  ;Records the yearly local and global MoS (for current simulation year) and the max values obtained since the start of the simulation
+  ymos-lq
+  ymos-lq_max
+  ymos-gq
+  ymos-gq_max
+  
+  ;Ratio of current to maximum MoS (local and global), used in the reinforcement algorithm
+  lrel-outcome-factor
+  grel-outcome-factor
+  
+  search-parameter ;Keeps track of the search parameter value, which changes as learning increases
+  previous-sp ;Records previous sp, used in the reinforcement algorithm calculation
+  
+  ;Records model outputs for export
+  output-table
+  
+  run# ;Records run number for running multiple repetitions of the same scenario
+]
+
+breed [bears bear]
+breed [tracks track] ;tracks are left to record bear locations at each time step
+
+tracks-own
+;Tracks are used to record bear locations. Each location is characterized by its year, season, and day 
+;as well as the id of the bear and the runtype (random, learning, or learning with memory)
+[
+  year
+  season
+  julianday
+  id
+  runtype
+]
+
+bears-own
+[
+  starting-point ;cells where bears are initiated each year
+  ID ;each bear is identified by an ID number (for post-analysis)
+]
+
+patches-own
+[
+  ;Each 1 ha cell belonging to a global (1 km2) cell shares the same global id (g-id) value (used to identify local cells within the 
+  ;same global cell), a global quality value (static), a global utility value (reinforced each season), and a temporary global utility 
+  ;value (equal to the global utility value unless the cell is replenishing)
+  g-id 
+  global-quality
+  global-utility
+  global-utility-temp
+  
+  ;Each local cell has a local quality value (static), a local utility value (reinforced each season), and a temporary local utility 
+  ;value (equal to the local utility value unless the cell is replenishing). For local cells, these values are available seasonally
+  local-utility1
+  local-utility2
+  local-utility3
+  local-quality1
+  local-quality2
+  local-quality3
+  local-utility-temp1
+  local-utility-temp2
+  local-utility-temp3
+  
+  ;Cells are identified as belonging to the AOI (aoi? = 1) or not (aoi? = 0) in order to reduce computations
+  aoi?
+]
+
+;;;;; SETUP ;;;;;
+;Load all landscape data (i.e. AOI shapefile, global quality values, global ID values, and local seasonal quality values
+;This must only be done once even when running multiple scenarios or simulation repetitions 
+to setup
+  ca
+  set-patch-size 0.4
+  
+  let aoi-data gis:load-dataset "Data/Boundaries/aoi_raster.asc"
+  resize-world 0 (gis:width-of aoi-data) 0 (gis:height-of aoi-data)
+  gis:set-world-envelope (gis:envelope-of aoi-data)
+  gis:set-transformation-ds (gis:envelope-of aoi-data) (list min-pxcor max-pxcor min-pycor max-pycor)
+  gis:apply-raster aoi-data aoi?
+  set AOI patches with [aoi? = 1]
+  
+  let global-data gis:load-dataset "Data/Rasters/Habitat/hab_mosaic_std.asc"
+  gis:apply-raster global-data global-quality
+  
+  let global-id-data gis:load-dataset "Data/Rasters/Habitat/hab_id.asc"
+  gis:apply-raster global-id-data g-id
+  
+  let local-data1 gis:load-dataset "Data/Rasters/lhypo_mos_std.asc"
+  gis:apply-raster local-data1 local-quality1
+  
+  let local-data2 gis:load-dataset "Data/Rasters/ehyper_mos_std.asc"
+  gis:apply-raster local-data2 local-quality2
+  
+  let local-data3 gis:load-dataset "Data/Rasters/lhyper_mos_std.asc"
+  gis:apply-raster local-data3 local-quality3
+end
+
+;;;;; INITIALIZE LANDSCAPE ;;;;;
+;Landacape must be set up when a new bear is being simulated or parameters (i.e. memory or no memory) are changed
+;The code restores initial values for landscape and model outputs are cleared
+to set-landscape
+  ask turtles [die]
+  cd
+  clear-all-plots
+  
+  set yearr 1
+  set seasonn 1
+  set day 121
+  set daycounter 0
+  
+  set search-parameter 0
+  set previous-sp 0
+  
+  set output-table table:make
+  table:put output-table "year" "search-parameter_ymos-gq_ymos-lq"
+  
+  set mos-s1lq1_max 0
+  set mos-s1lq2_max 0
+  set mos-s1lq3_max 0
+  set mos-s2lq1_max 0
+  set mos-s2lq2_max 0
+  set mos-s2lq3_max 0
+  set mos-s3lq1_max 0
+  set mos-s3lq2_max 0
+  set mos-s3lq3_max 0
+  
+  set mos-s1lq1 0
+  set mos-s1lq2 0
+  set mos-s1lq3 0
+  set mos-s2lq1 0
+  set mos-s2lq2 0
+  set mos-s2lq3 0
+  set mos-s3lq1 0
+  set mos-s3lq2 0
+  set mos-s3lq3 0
+  
+  set mos-s1gq 0
+  set mos-s2gq 0
+  set mos-s3gq 0
+  
+  set mos-s1gq_max 0
+  set mos-s2gq_max 0
+  set mos-s3gq_max 0
+  
+  set ymos-lq_max 0
+  set ymos-gq_max 0
+  
+  set visited-gcells-seasonal []
+  set visited-gcells []
+  set visited-lcells-seasonal []
+  
+  set replenishing-gcells []
+  set replenishing-lcells []
+  
+  ;initially set all values to 0 and visualize the landscape based on local quality values for season 1
+  no-display
+  ask patches
+  [
+    ifelse aoi? = 1 
+    [
+      set local-utility1 0
+      set local-utility2 0
+      set local-utility3 0
+      set local-utility-temp1 0
+      set local-utility-temp2 0
+      set local-utility-temp3 0
+      set global-utility 0
+      set global-utility-temp 0
+      set pcolor scale-color black local-quality1 0 1
+    ]
+    [
+      set local-quality1 0
+      set local-quality2 0
+      set local-quality3 0
+      set global-quality 0
+    ]
+  ]
+  display
+  
+  reset-ticks
+end
+
+;;;;; INITIALIZE BEARS ;;;;;
+;Bears are initialized in the same patch which they record as starting-point. They perform steps related to entering a 
+;new global cell, start recording what cells are visited, and initialize the measures of success (mos)
+to make-bears
+  ask patch 748 1114
+  [
+    sprout-bears 1
+    [
+      set size 5
+      set color yellow
+      set heading 0
+      set starting-point patch-here
+      entered-newgcell
+      set visited-lcells-seasonal patch-here
+      initialize-mos
+    ]
+  ]
+end
+
+;;;;; GO ;;;;;
+to go
+  ;Each time seasons change, the model updates the seasonal memory (if memory is on), increases the search parameter, 
+  ;changes the season number, and initializes the mos so they start recording outcomes for that specific season.
+  if ticks = 1104
+  [
+    ask bears
+    [
+      if Memory [update-seasonal-memory]
+      set search-parameter (search-parameter + (((.9 - (1 / (1 + (e ^ (0.6 * (yearr - 3)))))) - previous-sp) * (1104 / 3672)))
+      set seasonn 2
+      initialize-mos
+    ]
+  ]
+  
+  if ticks = 2568
+  [
+    ask bears
+    [
+      if Memory [update-seasonal-memory]
+      set search-parameter (search-parameter + (((.9 - (1 / (1 + (e ^ (0.6 * (yearr - 3)))))) - previous-sp) * (1464 / 3672)))
+      set seasonn 3
+      initialize-mos
+    ]
+  ]
+  
+  ;Each time step, bears move, update cells, update measures of success, and set a track. 
+  ask bears
+  [
+    move
+    update-cells
+    update-mos
+    set-track
+  ]
+  
+  ;Day counters are updated after each time step
+  set daycounter daycounter + 1
+  if daycounter = 24 [set daycounter 0 set day day + 1]
+  
+  ;If it's the end of the year the model changes year and updates memory and search parameters. If it is the last year of 
+  ;the simulation, model outcomes are exported, run number is updated, and the landscape is reset to initial values with a 
+  ;new bear. Simulations stop after 100 runs
+  if ticks = 3672
+  [
+    change-year
+    if Memory [update-seasonal-memory]
+    set search-parameter (search-parameter + (((.9 - (1 / (1 + (e ^ (0.6 * (yearr - 3)))))) - previous-sp) * (1104 / 3672)))
+    set previous-sp search-parameter
+    
+    if yearr = 30
+    [
+      export-table
+      export-coordinates
+      set run# (run# + 1)
+      if run# = 101 [stop]
+      set-landscape
+      make-bears
+    ]
+  ]
+  
+  tick
+end
+
+;;;;; MOVE ;;;;;
+to move
+  ;If bears are close to the edge, they move to a patch further away from the edge. This did not occur frequently 
+  ;and this code addition did not affect model results. 
+  ifelse not all? patches in-radius 3 [aoi? = 1]
+  [
+    move-to one-of patches in-radius 5 with [aoi? = 1]
+  ]
+  [
+    if ([g-id] of patch-here != current-id) ;if entered a new global patch
+    [
+      entered-newgcell
+    ]
+    ifelse random-float 1 < search-parameter ;if moving through exploitation
+    [
+      ifelse (([global-utility-temp] of patch-here) > 0.15) ;if current global cell is not depleted
+      [
+        ;exploit local cells in a 250m radius belonging to the current global cell
+        ifelse seasonn = 1
+        [
+          move-to max-one-of patches in-radius 2.5 with [g-id = current-id] [local-utility-temp1]
+        ]
+        [ifelse seasonn = 2
+          [move-to max-one-of patches in-radius 2.5 with [g-id = current-id] [local-utility-temp2]]
+          [move-to max-one-of patches in-radius 2.5 with [g-id = current-id] [local-utility-temp3]]
+        ]
+      ]
+      ;if the current global cell is depleted
+      [
+        set-global-target ;find new global target cell
+        face one-of patches with [g-id = target-id] ;face this new target
+                                                    ;move towards the target by exploiting local cells in a visual cone of 250m and 90 degree angle
+        ifelse seasonn = 1
+        [move-to max-one-of patches in-cone 2.5 90 [local-utility-temp1]]
+        [ifelse seasonn = 2
+          [move-to max-one-of patches in-cone 2.5 90 [local-utility-temp2]]
+          [move-to max-one-of patches in-cone 2.5 90 [local-utility-temp3]]
+        ]
+      ]
+    ]
+    [
+      ;if movement is random, face a random direction based on a normal distribution and step 100m forward
+      set heading (heading + (random-normal 0 20))
+      fd 1
+    ]
+  ]
+end
+
+to entered-newgcell ;when entering a new cell, 
+                    ;recognize the current global cell based on g-id
+  set current-id [g-id] of patch-here
+  set this-global-cell patches in-radius 20 with [g-id = current-id and aoi? = 1]
+  
+  ;add this new global cell to the visited cells
+  set visited-gcells (patch-set this-global-cell visited-gcells)
+  set visited-gcells-seasonal (patch-set this-global-cell visited-gcells-seasonal)
+  set replenishing-gcells (visited-gcells-seasonal with [(global-utility-temp != global-utility)])
+  
+  ;diminish utility value by 20%
+  ask this-global-cell
+  [
+    if global-utility =  0 [set global-utility global-quality set global-utility-temp global-utility]
+    set global-utility-temp (global-utility-temp * (1 - 0.20))
+  ]
+end
+
+to set-global-target 
+  ;find new global cell target by identifying the global cell in a radius of 1000m (this includes all 8 neighbouring
+  ;global cells) with the highest global utility value
+  let global-target (max-one-of patches in-radius 10 [global-utility-temp])
+  set target-id [g-id] of global-target
+end
+
+to update-cells
+  ;perceive all cells within a 250m radius and record their local utility values
+  ask patches in-radius 2.5
+  [
+    if local-utility1 = 0 
+    [
+      set local-utility1 local-quality1
+      set local-utility-temp1 local-utility1
+      set local-utility2 local-quality2
+      set local-utility-temp2 local-utility2
+      set local-utility3 local-quality3
+      set local-utility-temp3 local-utility3
+    ]
+  ]
+  
+  ;perceive all cells within a 500m radius and record their global utility values
+  ask patches in-radius 5
+  [
+    if global-utility = 0
+    [
+      set global-utility global-quality
+      set global-utility-temp global-utility
+    ]
+  ]
+  
+  ;update which local cells have been visited this season
+  set visited-lcells-seasonal (patch-set patch-here visited-lcells-seasonal)
+  
+  ;update which local cells are still replenishing (i.e. local temporary utility is different than local utility
+  set replenishing-lcells (visited-lcells-seasonal with
+    [(local-utility-temp1 != local-utility1) or
+      (local-utility-temp2 != local-utility2) or
+      (local-utility-temp3 != local-utility3)])
+  
+  ;increase local utility of all local replenishing cells by 25%
+  ask replenishing-lcells with [local-utility-temp1 < local-utility1]
+  [
+    set local-utility-temp1 (local-utility-temp1 * (1 + 0.25))
+    if local-utility-temp1 > local-utility1 [set local-utility-temp1 local-utility1]
+  ] 
+  ask replenishing-lcells with [local-utility-temp2 < local-utility2]
+  [
+    set local-utility-temp2 (local-utility-temp2 * (1 + 0.25))
+    if local-utility-temp2 > local-utility2 [set local-utility-temp2 local-utility2]
+  ]
+  ask replenishing-lcells with [local-utility-temp3 < local-utility3]
+  [
+    set local-utility-temp3 (local-utility-temp3 * (1 + 0.25))
+    if local-utility-temp3 > local-utility3 [set local-utility-temp3 local-utility3]
+  ]
+  
+  ;reduce seasonal utility value of currently occupied local cell by 65%
+  ifelse seasonn = 1
+  [
+    set local-utility-temp1 (local-utility-temp1 * (1 - 0.65))
+  ]
+  [
+    ifelse seasonn = 2
+    [
+      set local-utility-temp2 (local-utility-temp2 * (1 - 0.65))
+    ]
+    [
+      set local-utility-temp3 (local-utility-temp3 * (1 - 0.65))
+    ]
+  ]
+  
+  ;increase global utility of all global replenishing cells by 1%
+  ask replenishing-gcells
+  [
+    set global-utility-temp (global-utility-temp * (1 + 0.01))
+    if global-utility-temp > global-utility [set global-utility-temp global-utility]
+  ]
+  
+  ;reduce utility value of currently occupied global cell by 20%
+  ask this-global-cell
+  [
+    set global-utility-temp (global-utility-temp * (1 - 0.20))
+  ]
+end
+
+to update-mos
+  ;increase global and local MoS by the global and local quality, respectively, of the currently occupied cell
+  set ymos-gq (ymos-gq + [global-quality] of patch-here)
+  ifelse seasonn = 1
+  [
+    set mos-s1gq (mos-s1gq + [global-quality] of patch-here)
+    set ymos-lq (ymos-lq + [local-quality1] of patch-here)
+    set mos-s1lq1 (mos-s1lq1 + [local-quality1] of patch-here)
+    set mos-s1lq2 (mos-s1lq2 + [local-quality2] of patch-here)
+    set mos-s1lq3 (mos-s1lq3 + [local-quality3] of patch-here)
+  ]
+  [ifelse seasonn = 2
+    [
+      set mos-s2gq (mos-s2gq + [global-quality] of patch-here)
+      set ymos-lq (ymos-lq + [local-quality2] of patch-here)
+      set mos-s2lq1 (mos-s2lq1 + [local-quality1] of patch-here)
+      set mos-s2lq2 (mos-s2lq2 + [local-quality2] of patch-here)
+      set mos-s2lq3 (mos-s2lq3 + [local-quality3] of patch-here)
+    ]
+    [
+      set mos-s3gq (mos-s3gq + [global-quality] of patch-here)
+      set ymos-lq (ymos-lq + [local-quality3] of patch-here)
+      set mos-s3lq1 (mos-s3lq1 + [local-quality1] of patch-here)
+      set mos-s3lq2 (mos-s3lq2 + [local-quality2] of patch-here)
+      set mos-s3lq3 (mos-s3lq3 + [local-quality3] of patch-here)
+    ]
+  ]
+end
+
+to initialize-mos
+  ;At the start of each season, set global and local MoS to be equal to the global and local quality, respectively, of the currently 
+  ;occuped cell. Yearly MoS are only initiated at the start of the first season. 
+  ifelse seasonn = 1
+  [
+    set ymos-gq [global-quality] of patch-here
+    set mos-s1gq [global-quality] of patch-here
+    set ymos-lq [local-quality1] of patch-here
+    set mos-s1lq1 [local-quality1] of patch-here
+    set mos-s1lq2 [local-quality2] of patch-here
+    set mos-s1lq3 [local-quality3] of patch-here
+  ]
+  [ifelse seasonn = 2
+    [
+      set mos-s2gq [global-quality] of patch-here
+      set mos-s2lq1 [local-quality1] of patch-here
+      set mos-s2lq2 [local-quality2] of patch-here
+      set mos-s2lq3 [local-quality3] of patch-here
+    ]
+    [
+      set mos-s3gq [global-quality] of patch-here
+      set mos-s3lq1 [local-quality1] of patch-here
+      set mos-s3lq2 [local-quality2] of patch-here
+      set mos-s3lq3 [local-quality3] of patch-here
+    ]
+  ]
+end
+
+to change-year
+  ;At the end of the year:
+  ask bears
+  [
+    ;record the search parameter as well as yearly global and local MoS to the output table
+    table:put output-table yearr (word search-parameter "_" ymos-gq "_" ymos-lq)
+    
+    ;update plots for visualization while a simulation is running
+    set-current-plot "Global MoS"
+    create-temporary-plot-pen ""
+    plot ymos-gq
+    set-current-plot "Local MoS"
+    create-temporary-plot-pen ""
+    plot ymos-lq
+    set-current-plot "Search Parameter"
+    create-temporary-plot-pen ""
+    plot search-parameter
+  ]
+  
+  ;reset temporary utility to equal global utility (in case some cells were not fully replenished
+  ask visited-gcells
+  [
+    set global-utility-temp global-utility
+    set local-utility-temp1 local-utility1
+    set local-utility-temp2 local-utility2
+    set local-utility-temp3 local-utility3
+  ]
+  
+  ;restart time markers for the new year
+  set seasonn 1
+  set yearr yearr + 1
+  set daycounter 0
+  set day 122
+  
+  reset-ticks
+  ;bears are moved to starting point and year starts again
+  ask bears
+  [
+    set visited-gcells []
+    move-to starting-point
+    set-track
+    entered-newgcell
+    initialize-mos
+    update-mos
+  ]
+  
+  cd
+end
+
+;;;;; MEMORY PROCEDURE ;;;;;
+to update-seasonal-memory
+  ask visited-lcells-seasonal
+  [
+    if local-utility1 = 0 [set local-utility1 local-quality1]
+    if local-utility2 = 0 [set local-utility2 local-quality2]
+    if local-utility3 = 0 [set local-utility3 local-quality3]
+  ]
+  
+  ;in the first year, yearly MoS is equal to the maximum MoS in each season
+  ifelse yearr = 1
+  [
+    ifelse seasonn = 1
+    [
+      set mos-s1gq_max mos-s1gq
+      set mos-s1lq1_max mos-s1lq1
+      set mos-s1lq2_max mos-s1lq2
+      set mos-s1lq3_max mos-s1lq3
+    ]
+    [ifelse seasonn = 2
+      [
+        set mos-s2gq_max mos-s2gq
+        set mos-s2lq1_max mos-s2lq1
+        set mos-s2lq2_max mos-s2lq2
+        set mos-s2lq3_max mos-s2lq3
+      ]
+      [
+        set mos-s3gq_max mos-s3gq
+        set mos-s3lq1_max mos-s3lq1
+        set mos-s3lq2_max mos-s3lq2
+        set mos-s3lq3_max mos-s3lq3
+      ]
+    ]
+  ]
+  [
+    ;in each season, outcome factors are calculated and used to positively reinforce all visited cells in that season
+    ifelse seasonn = 1
+    [
+      set grel-outcome-factor ((mos-s1gq / mos-s1gq_max) ^ 10)
+      ask visited-gcells-seasonal
+      [
+        set global-utility ((global-utility * 0.5) + ((global-quality * grel-outcome-factor) * 0.5))
+      ]
+      set lrel-outcome-factor ((mos-s1lq1 / mos-s1lq1_max) ^ 10)
+      ask visited-lcells-seasonal
+      [
+        set local-utility1 ((local-utility1 * 0.5) + ((local-quality1 * lrel-outcome-factor) * 0.5))
+      ]
+      set lrel-outcome-factor ((mos-s1lq2 / mos-s1lq2_max) ^ 10)
+      ask visited-lcells-seasonal
+      [
+        set local-utility2 ((local-utility2 * 0.5) + ((local-quality2 * lrel-outcome-factor) * 0.5))
+      ]
+      set lrel-outcome-factor ((mos-s1lq3 / mos-s1lq3_max) ^ 10)
+      ask visited-lcells-seasonal
+      [
+        set local-utility3 ((local-utility3 * 0.5) + ((local-quality3 * lrel-outcome-factor) * 0.5))
+      ]
+    ]
+    [ifelse seasonn = 2
+      [
+        set grel-outcome-factor ((mos-s2gq / mos-s2gq_max) ^ 10)
+        ask visited-gcells-seasonal
+        [
+          set global-utility ((global-utility * 0.5) + ((global-quality * grel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s2lq1 / mos-s2lq1_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility1 ((local-utility1 * 0.5) + ((local-quality1 * lrel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s2lq2 / mos-s2lq2_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility2 ((local-utility2 * 0.5) + ((local-quality2 * lrel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s2lq3 / mos-s2lq3_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility3 ((local-utility3 * 0.5) + ((local-quality3 * lrel-outcome-factor) * 0.5))
+        ]
+      ]
+      [
+        set grel-outcome-factor ((mos-s3gq / mos-s3gq_max) ^ 10)
+        ask visited-gcells-seasonal
+        [
+          set global-utility ((global-utility * 0.5) + ((global-quality * grel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s3lq1 / mos-s3lq1_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility1 ((local-utility1 * 0.5) + ((local-quality1 * lrel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s3lq2 / mos-s3lq2_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility2 ((local-utility2 * 0.5) + ((local-quality2 * lrel-outcome-factor) * 0.5))
+        ]
+        set lrel-outcome-factor ((mos-s3lq3 / mos-s3lq3_max) ^ 10)
+        ask visited-lcells-seasonal
+        [
+          set local-utility3 ((local-utility3 * 0.5) + ((local-quality3 * lrel-outcome-factor) * 0.5))
+  ]]]]
+  
+  set visited-gcells-seasonal []
+  set visited-gcells (patch-set this-global-cell visited-gcells)
+  set visited-gcells-seasonal (patch-set this-global-cell visited-gcells-seasonal)
+end
+
+to set-track ;bears leave 'bread crumbs' used to record their locations
+  ask bears
+  [
+    let b-id run#
+    hatch-tracks 1
+    [
+      set hidden? true
+      move-to myself
+      set id b-id
+      set julianday day
+      set  year yearr
+      set season seasonn
+      set runtype run_type
+    ]
+  ]
+end
+
+to export-coordinates
+  let path (word "Mar 11 Results/coordinates_test_" run# )
+  gis:store-dataset gis:turtle-dataset tracks path
+  show (word "Exported shapefile to " path ".")
+end
+
+to export-table
+  let memlist table:to-list output-table
+  csv:to-file (word "Tables/test_" run# ".csv") memlist
+end
+
+
