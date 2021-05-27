@@ -9,6 +9,9 @@
 ;Any questions about the code should be addressed to Alejandra Zubiria Perez (aleja.zubiria@gmail.com)
 
 ;;; NOTES ;;;
+;Given the size of the world used in this model, you will have to increase the RAM available for Netlogo to at least 6000
+;See: https://ccl.northwestern.edu/netlogo/docs/faq.html#how-big-can-my-model-be-how-many-turtles-patches-procedures-buttons-and-so-on-can-my-model-contain
+
 ;In order to run the code successfully you must indicate whether memory is active or not.
 ;Main setup only needs to be completed once, but the lanscape should be set up before each new simulation
 ;Run-type is only used to distinguish between model outputs (memory vs. no memory)
